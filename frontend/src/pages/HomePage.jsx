@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell.jsx'
-import { fetchRakesList, fetchLoadingReport, fetchWagonsByRake } from '../api/index.js'
+import { fetchRakesList, fetchLoadingReport, fetchWagonsByRake, updateTramsId } from '../api/index.js'
 import { useToast } from '../context/ToastContext.jsx'
+import Modal from '../components/shared/Modal.jsx'
 
 const STATUS_CONFIG = {
   ACTIVE:      { label: 'Active',      badge: 'badge-navy',    dot: true },
@@ -43,6 +44,9 @@ export default function HomePage() {
   const [sortDir,   setSortDir]   = useState('desc')
   const [activeSession, setActiveSession] = useState(null)
   const [wagonCounts, setWagonCounts] = useState({})
+  const [tramsModal, setTramsModal] = useState(null) // { rakeId }
+  const [tramsInput, setTramsInput] = useState('')
+  const [tramsLoading, setTramsLoading] = useState(false)
 
   useEffect(() => {
     function checkActiveSession() {
@@ -121,6 +125,21 @@ export default function HomePage() {
         },
       }
     })
+  }
+
+  async function handleUpdateTramsId() {
+    if (!tramsInput.trim()) return
+    setTramsLoading(true)
+    try {
+      updateTramsId(tramsModal.rakeId, tramsInput.trim())
+      toastCtx.success({ title: 'TRAMS ID Updated', message: `${tramsModal.rakeId} -> ${tramsInput.trim()}` })
+      setTramsModal(null)
+      setTramsInput('')
+    } catch {
+      toastCtx.error('Failed to update TRAMS ID.')
+    } finally {
+      setTramsLoading(false)
+    }
   }
 
 
@@ -305,6 +324,7 @@ export default function HomePage() {
                     <th style={{ textAlign:'center' }}>Wagons</th>
                     <SortTh col="createdAt" label="Created"       current={sortCol} dir={sortDir} onSort={handleSort} />
                     <th>By</th>
+                    <th style={{ textAlign:'center' }}>TRAMS ID</th>
                     <th style={{ textAlign:'right' }}>Action</th>
                   </tr>
                 </thead>
@@ -347,6 +367,14 @@ export default function HomePage() {
                           <div style={{ fontSize:12.5, color:'var(--text-primary)' }}>{fmtDateOnly(rake.createdAt)}</div>
                         </td>
                         <td style={{ fontSize:12.5 }}>{rake.createdBy || '—'}</td>
+                        <td style={{ textAlign:'center' }}>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={e => { e.stopPropagation(); setTramsInput(''); setTramsModal({ rakeId: rake.rakeId }) }}
+                          >
+                            Update
+                          </button>
+                        </td>
                         <td style={{ textAlign:'right' }}>
                           {canLoad ? (
                             <button
@@ -386,6 +414,43 @@ export default function HomePage() {
             </button>
           </div>
         )}
+
+        <Modal
+          open={Boolean(tramsModal)}
+          onClose={() => { setTramsModal(null); setTramsInput('') }}
+          title={`Update TRAMS ID - Rake ${tramsModal?.rakeId || ''}`}
+          size="modal-sm"
+          footer={
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setTramsModal(null); setTramsInput('') }}>Cancel</button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleUpdateTramsId}
+                disabled={!tramsInput.trim() || tramsLoading}
+              >
+                {tramsLoading ? <><span className="spinner spinner-sm" /> Updating...</> : 'Update'}
+              </button>
+            </div>
+          }
+        >
+          <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+            <div className="form-group">
+              <label className="form-label" htmlFor="trams-id-input">TRAMS ID</label>
+              <input
+                id="trams-id-input"
+                className="form-control mono"
+                placeholder="Enter TRAMS ID..."
+                value={tramsInput}
+                onChange={e => setTramsInput(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && handleUpdateTramsId()}
+                autoFocus
+              />
+            </div>
+            <div style={{ fontSize:12, color:'var(--text-muted)' }}>
+              Rake ID: <strong style={{ fontFamily:'var(--font-mono)' }}>{tramsModal?.rakeId}</strong>
+            </div>
+          </div>
+        </Modal>
       </div>
     </AppShell>
   )

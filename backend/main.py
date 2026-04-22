@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
@@ -12,7 +14,51 @@ from normalizers import (
     normalize_rakes_list,
 )
 
-app = FastAPI(title="BSP Plate Loading API")
+_destinations_cache = None
+_destinations_cached_at: Optional[datetime] = None
+_loading_report_cache: dict = {}
+
+
+async def _refresh_all_loader_report_caches():
+    try:
+        raw = await _upstream_get("getRakeidDet.jsp")
+        if not isinstance(raw, list):
+            return
+
+        dest_codes = set()
+        for row in raw:
+            for key in ("DEST_CD1", "DEST_CD2"):
+                code = str(row.get(key) or "").strip()
+                if code:
+                    dest_codes.add(code)
+
+        for dest_cd in dest_codes:
+            try:
+                report_raw = await _upstream_get(
+                    "loaderReport.jsp",
+                    {"dest_cd": dest_cd, "dispatch_mode": "RAIL", "ord_status": "O"},
+                )
+                normalized = normalize_loading_data(report_raw if isinstance(report_raw, list) else [], dest_cd)
+                _loading_report_cache[dest_cd] = (normalized, datetime.now())
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+async def _cache_refresh_loop():
+    while True:
+        await asyncio.sleep(config.LOADING_REPORT_CACHE_TTL)
+        await _refresh_all_loader_report_caches()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(_cache_refresh_loop())
+    yield
+
+
+app = FastAPI(title="BSP Plate Loading API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,12 +68,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_destinations_cache = None
-_destinations_cached_at: Optional[datetime] = None
-_loading_report_cache: dict = {}
 
-
-async def _upstream_get(path: str, params: dict = None):
+async def _upstream_get(path: str, params: Optional[dict] = None):
     url = f"{config.UPSTREAM_BASE}/{path}"
     try:
         async with httpx.AsyncClient(timeout=config.REQUEST_TIMEOUT, verify=False) as client:
@@ -75,9 +117,96 @@ async def loader_report(dest_cd: str = Query(...)):
         "loaderReport.jsp",
         {"dest_cd": dest_cd, "dispatch_mode": "RAIL", "ord_status": "O"},
     )
-    normalized = normalize_loading_data(raw, dest_cd)
+    normalized = normalize_loading_data(raw if isinstance(raw, list) else [], dest_cd)
     _loading_report_cache[dest_cd] = (normalized, now)
     return normalized
+
+
+@app.get("/api/loaderReport/dummy")
+async def loader_report_dummy(dest_cd: str = Query(...)):
+    return [
+        {
+            "consigneeCode": "DUMMY001",
+            "consigneeName": "DUMMY CONSIGNEE ONE",
+            "wagonNo": None,
+            "plates": [
+                {
+                    "plateNo": "OK-1234567/1",
+                    "heatNo": "A12345",
+                    "plateType": "OK",
+                    "ordNo": "ORD001",
+                    "grade": "IS2062",
+                    "tdc": "TDC1",
+                    "colourCd": "R",
+                    "ordSize": "12x2000x6000",
+                    "thickness": "12",
+                    "width": "2000",
+                    "length": "6000",
+                    "pcWgt": 1.131,
+                    "loaded": False,
+                    "loadedAt": None,
+                },
+                {
+                    "plateNo": "OK-1234568/1",
+                    "heatNo": "A12345",
+                    "plateType": "RA",
+                    "ordNo": "ORD001",
+                    "grade": "IS2062",
+                    "tdc": "TDC1",
+                    "colourCd": "R",
+                    "ordSize": "12x2000x6000",
+                    "thickness": "12",
+                    "width": "2000",
+                    "length": "6000",
+                    "pcWgt": 1.131,
+                    "loaded": False,
+                    "loadedAt": None,
+                },
+            ],
+            "orders": [
+                {
+                    "ordNo": "ORD001",
+                    "grade": "IS2062",
+                    "tdc": "TDC1",
+                    "colourCd": "R",
+                    "ordSize": "12x2000x6000",
+                    "thickness": "12",
+                    "width": "2000",
+                    "length": "6000",
+                    "pcWgt": 1.131,
+                    "ordType": "TYPE1",
+                    "usageGrp": "GRP1",
+                    "destNm": dest_cd,
+                    "dispatchMode": "RAIL",
+                    "ordThk": None,
+                    "ord": 10,
+                    "desp": 2,
+                    "bal": 8,
+                    "bfr": 0,
+                    "bfr1": None,
+                    "fin": 0,
+                    "finstk": 0,
+                    "norm": 0,
+                    "test": 0,
+                    "ra": 1,
+                    "tpi": 0,
+                    "nop": "2",
+                    "wgt": "",
+                    "pmBfd": 0,
+                    "remart": "",
+                    "ordPr": "",
+                    "nor": "",
+                    "heatRaw": "",
+                    "platesRaw": "",
+                    "tpiPlatesRaw": "",
+                    "mtiPendingRaw": "",
+                    "divRaw": "",
+                },
+            ],
+            "okPlateCount": 1,
+            "totalPlateCount": 2,
+        }
+    ]
 
 
 @app.get("/api/plateInfo")
@@ -165,3 +294,25 @@ async def post_wagon_rakeid(
 async def mesapp_login(userid: str = Query(...), password: str = Query(...)):
     raw = await _upstream_get("mesappLogin.jsp", {"userid": userid, "password": password})
     return raw
+
+
+@app.get("/api/cache/status")
+async def cache_status():
+    return {
+        "destinations_cached": _destinations_cache is not None,
+        "destinations_cached_at": _destinations_cached_at.isoformat() if _destinations_cached_at else None,
+        "destinations_count": len(_destinations_cache) if _destinations_cache else 0,
+        "loading_report_cache": {
+            dest_cd: {
+                "cached_at": cached_at.isoformat(),
+                "consignee_count": len(data),
+                "age_seconds": (datetime.now() - cached_at).total_seconds(),
+            }
+            for dest_cd, (data, cached_at) in _loading_report_cache.items()
+        },
+    }
+
+
+@app.get("/api/updateTramsId/dummy")
+async def update_trams_id_dummy(rakeid: str = Query(...), tramsid: str = Query(...)):
+    return {"success": True, "rakeId": rakeid, "tramsId": tramsid}

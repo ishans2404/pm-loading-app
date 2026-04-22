@@ -195,3 +195,9 @@ export async function authenticateUser(username, password) {
     return { ok: false, user: null, error: err.message || 'Authentication failed.' }
   }
 }
+
+
+export async function updateTramsId(rakeId, tramsId) {
+  const res = await fetch(`/api/updateTramsId/dummy?rakeid=${encodeURIComponent(rakeId)}&tramsid=${encodeURIComponent(tramsId)}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+}
