@@ -1,0 +1,20 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: plate-app-frontend
+    ports:
+      - "8703:8703"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: plate-app-backend
+    ports:
+      - "8704:8704"
+    restart: unless-stopped
